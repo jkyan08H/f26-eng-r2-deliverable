@@ -1,22 +1,21 @@
 "use client";
 
-import { Icons } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/components/ui/use-toast";
 import { createBrowserSupabaseClient } from "@/lib/client-utils";
+import type { Database } from "@/lib/schema";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { useState, type BaseSyntheticEvent } from "react";
@@ -30,53 +29,69 @@ import {
   type SpeciesFormData,
 } from "./species-schema";
 
-type FormData = SpeciesFormData;
+type Species = Database["public"]["Tables"]["species"]["Row"];
 
-// Default values for the form fields.
-/* Because the react-hook-form (RHF) used here is a controlled form (not an uncontrolled form),
-fields that are nullable/not required should explicitly be set to `null` by default.
-Otherwise, they will be `undefined` by default, which will raise warnings because `undefined` conflicts with controlled components.
-All form fields should be set to non-undefined default values.
-Read more here: https://legacy.react-hook-form.com/api/useform/
-*/
-const defaultValues: Partial<FormData> = {
-  scientific_name: "",
-  common_name: null,
-  kingdom: "Animalia",
-  total_population: null,
-  image: null,
-  description: null,
-};
-
-export default function AddSpeciesDialog({ userId }: { userId: string }) {
+export default function EditSpeciesDialog({ species }: { species: Species }) {
   const router = useRouter();
 
-  // Control open/closed state of the dialog
+  // Controlled so the form can be re-seeded from props whenever the dialog opens.
   const [open, setOpen] = useState<boolean>(false);
 
-  // Instantiate form functionality with React Hook Form, passing in the Zod schema (for validation) and default values
-  const form = useForm<FormData>({
+  // Unlike the "Add species" form, the defaults are the row being edited rather than empty values.
+  // Nullable columns are passed through as null rather than "" for the reason given in
+  // add-species-dialog.tsx: this is a controlled form, and undefined/"" mismatches raise warnings.
+  const defaultValues: SpeciesFormData = {
+    scientific_name: species.scientific_name,
+    common_name: species.common_name,
+    kingdom: species.kingdom,
+    total_population: species.total_population,
+    image: species.image,
+    description: species.description,
+  };
+
+  const form = useForm<SpeciesFormData>({
     resolver: zodResolver(speciesSchema),
     defaultValues,
     mode: "onChange",
   });
 
-  const onSubmit = async (input: FormData) => {
-    // The `input` prop contains data that has already been processed by zod. We can now use it in a supabase query
+  // Read during render on purpose. react-hook-form's formState is a Proxy that only subscribes the
+  // component to the fields it sees touched while rendering, so reading form.formState.isDirty
+  // inside the callback below would never subscribe and the guard would silently never fire.
+  const { isDirty } = form.formState;
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    // Re-seed on every open so an abandoned draft never reappears later, and so the form reflects
+    // any change that has landed since this card was first rendered.
+    if (nextOpen) form.reset(defaultValues);
+    setOpen(nextOpen);
+  };
+
+  const onSubmit = async (input: SpeciesFormData) => {
     const supabase = createBrowserSupabaseClient();
-    const { error } = await supabase.from("species").insert([
-      {
-        author: userId,
+
+    // `.select()` is load-bearing, not decoration. Without it supabase-js sends
+    // `Prefer: return=minimal` and resolves with { data: null, error: null } even when the UPDATE
+    // matched no rows at all. The species policy is `for update using (auth.uid() = author)`, so a
+    // row this user does not own is simply invisible to the statement -- Postgres skips it and
+    // raises nothing. Asking for the updated rows back is what distinguishes a real save from one
+    // that was silently discarded, which would otherwise show a success toast and change nothing.
+    //
+    // `author` and `id` are deliberately absent from the payload. A BEFORE UPDATE trigger raises
+    // 'changing species author is not allowed', and a species' identity is not the user's to edit.
+    const { data, error } = await supabase
+      .from("species")
+      .update({
         common_name: input.common_name,
         description: input.description,
         kingdom: input.kingdom,
         scientific_name: input.scientific_name,
         total_population: input.total_population,
         image: input.image,
-      },
-    ]);
+      })
+      .eq("id", species.id)
+      .select();
 
-    // Catch and report errors from Supabase and exit the onSubmit function with an early 'return' if an error occurred.
     if (error) {
       return toast({
         title: "Something went wrong.",
@@ -85,37 +100,53 @@ export default function AddSpeciesDialog({ userId }: { userId: string }) {
       });
     }
 
-    // Because Supabase errors were caught above, the remainder of the function will only execute upon a successful edit
+    if (data.length === 0) {
+      return toast({
+        title: "Nothing was saved.",
+        description: "A species can only be edited by the person who added it. Try reloading the page.",
+        variant: "destructive",
+      });
+    }
 
-    // Reset form values to the default (empty) values.
-    // Practically, this line can be removed because router.refresh() also resets the form. However, we left it as a reminder that you should generally consider form "cleanup" after an add/edit operation.
-    form.reset(defaultValues);
+    // Reset to the values zod produced rather than the ones typed, so that if this form is reopened
+    // before the server components refresh, it shows what was actually stored (trimmed, nulled).
+    form.reset(input);
 
     setOpen(false);
 
-    // Refresh all server components in the current route. This helps display the newly created species because species are fetched in a server component, species/page.tsx.
-    // Refreshing that server component will display the new species from Supabase
+    // Species are fetched in species/page.tsx, a server component. Refreshing the route re-runs that
+    // fetch and re-renders the card with the updated row.
     router.refresh();
 
     return toast({
-      title: "New species added!",
-      description: "Successfully added " + input.scientific_name + ".",
+      title: "Species updated!",
+      description: "Successfully updated " + input.scientific_name + ".",
     });
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        <Button variant="secondary">
-          <Icons.add className="mr-3 h-5 w-5" />
-          Add Species
+        <Button variant="secondary" className="w-full">
+          Edit
+          {/* One card renders per species, so without this suffix a screen reader's element list
+              would show a dozen identical "Edit" buttons. */}
+          <span className="sr-only">{` ${species.scientific_name}`}</span>
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-screen overflow-y-auto sm:max-w-[600px]">
+      <DialogContent
+        className="max-h-screen overflow-y-auto sm:max-w-[600px]"
+        onInteractOutside={(event) => {
+          // A click on the overlay while there are unsaved changes is almost always a misclick, so
+          // it is ignored. Escape and Cancel are deliberate gestures and still close the dialog --
+          // discarding the draft, which reopening then re-seeds from the saved row.
+          if (isDirty) event.preventDefault();
+        }}
+      >
         <DialogHeader>
-          <DialogTitle>Add Species</DialogTitle>
+          <DialogTitle>Edit Species</DialogTitle>
           <DialogDescription>
-            Add a new species here. Click &quot;Add Species&quot; below when you&apos;re done.
+            Update the details for this species. Click &quot;Save changes&quot; below when you&apos;re done.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -200,6 +231,7 @@ export default function AddSpeciesDialog({ userId }: { userId: string }) {
                           onChange={(event) => onChange(populationFromInput(event.target.value))}
                         />
                       </FormControl>
+                      <FormDescription>Leave blank if the population is unknown.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   );
@@ -222,6 +254,7 @@ export default function AddSpeciesDialog({ userId }: { userId: string }) {
                           onChange={(event) => onChange(emptyToNull(event.target.value))}
                         />
                       </FormControl>
+                      <FormDescription>Clear this field to remove the image.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   );
@@ -251,13 +284,18 @@ export default function AddSpeciesDialog({ userId }: { userId: string }) {
               />
               <div className="flex">
                 <Button type="submit" className="ml-1 mr-1 flex-auto">
-                  Add Species
+                  Save changes
                 </Button>
-                <DialogClose asChild>
-                  <Button type="button" className="ml-1 mr-1 flex-auto" variant="secondary">
-                    Cancel
-                  </Button>
-                </DialogClose>
+                {/* Not DialogClose: closing has to go through handleOpenChange so the draft is
+                    discarded and re-seeded consistently, whichever way the dialog is dismissed. */}
+                <Button
+                  type="button"
+                  className="ml-1 mr-1 flex-auto"
+                  variant="secondary"
+                  onClick={() => handleOpenChange(false)}
+                >
+                  Cancel
+                </Button>
               </div>
             </div>
           </form>

@@ -8,6 +8,14 @@ export const env = createEnv({
    */
   server: {
     NODE_ENV: z.enum(["development", "test", "production"]),
+    /*
+    Optional on purpose. Declaring it required would make a missing chatbot key abort the whole
+    app at import time, taking the species list down with it -- too much coupling for one
+    optional feature. Instead lib/services/species-chat.ts checks it at the point of use and
+    degrades only the chatbot. Never prefixed NEXT_PUBLIC_, which would inline it into the
+    client bundle and publish the key to every visitor.
+    */
+    OPENAI_API_KEY: z.string().min(1).optional(),
   },
 
   /**
@@ -27,6 +35,7 @@ export const env = createEnv({
    */
   runtimeEnv: {
     NODE_ENV: process.env.NODE_ENV,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,

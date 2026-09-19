@@ -20,7 +20,13 @@ export default async function SpeciesList() {
   // Obtain the ID of the currently signed-in user
   const sessionId = session.user.id;
 
-  const { data: species } = await supabase.from("species").select("*").order("id", { ascending: false });
+  // The author's profile is joined here rather than fetched per card: one query for the page
+  // instead of one per species. RLS makes every profile readable, so the join adds no exposure
+  // beyond what the profiles table already permits.
+  const { data: species } = await supabase
+    .from("species")
+    .select("*, profiles(display_name, email, biography)")
+    .order("id", { ascending: false });
 
   return (
     <>
@@ -30,7 +36,7 @@ export default async function SpeciesList() {
       </div>
       <Separator className="my-4" />
       <div className="flex flex-wrap justify-center">
-        {species?.map((species) => <SpeciesCard key={species.id} species={species} />)}
+        {species?.map((species) => <SpeciesCard key={species.id} species={species} sessionId={sessionId} />)}
       </div>
     </>
   );
