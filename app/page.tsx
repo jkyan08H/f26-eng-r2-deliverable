@@ -1,4 +1,3 @@
-import { Separator } from "@/components/ui/separator";
 import { TypographyH2, TypographyP } from "@/components/ui/typography";
 
 export default function Home() {
